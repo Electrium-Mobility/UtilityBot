@@ -1,0 +1,1 @@
+"""Meeting Notes Generator module package."""

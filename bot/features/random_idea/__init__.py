@@ -1,0 +1,1 @@
+"""Random Idea Generator module package."""
