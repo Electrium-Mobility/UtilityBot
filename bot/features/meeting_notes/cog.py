@@ -7,39 +7,35 @@ import asyncio
 import os
 import logging
 from dotenv import load_dotenv
-from .recorder import CombinedRecorder
 import ctypes
 
 log = logging.getLogger(__name__)
 
+# Initialize OpenAI client
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# Load Opus DLL for audio decoding
 opus_path = r"C:\Users\tanis\Desktop\UtilityBot\bot\library"
 os.add_dll_directory(opus_path)
 os.environ["PATH"] = opus_path + os.pathsep + os.environ["PATH"]
 os.environ["OPUS_LIBRARY"] = os.path.join(opus_path, "opus.dll")
 
 ctypes.cdll.LoadLibrary(os.path.join(opus_path, "opus.dll"))
-
 import opuslib
 
+# Decodes incoming Opus audio and stores PCM samples
 class CombinedRecorder(voice_recv.AudioSink):
-    """AudioSink that receives Opus packets and decodes to PCM."""
-
     def __init__(self, cog):
         super().__init__()
         self.cog = cog
-        self.decoder = opuslib.Decoder(48000, 1)  # 1 = mono channel
+        self.decoder = opuslib.Decoder(48000, 1)
 
     def wants_opus(self) -> bool:
-        """Tell Discord to send Opus (compressed) audio."""
         return True
 
     def write(self, user, data):
-        """Called when an Opus frame arrives."""
         try:
             if data.opus:
                 pcm = self.decoder.decode(data.opus, 960, decode_fec=False)
@@ -51,36 +47,57 @@ class CombinedRecorder(voice_recv.AudioSink):
             log.error(f"Unexpected error decoding audio: {e}")
 
     def cleanup(self):
-        """Optional: clean up resources."""
         pass
 
 
+# Cog for meeting notes functionality
 class MeetingNotesCog(commands.Cog):
-    """Records and transcribes audio from a Discord voice channel."""
-
     def __init__(self, bot):
         self.bot = bot
         self.vc = None
         self.audio_buffer = []
         super().__init__()
 
+    # Create WAV file from recorded audio
     async def cleanup(self):
-        """Combine and save recorded PCM data to WAV."""
         if not self.audio_buffer:
-            print("⚠️ No audio data received.")
+            print("No audio data received.")
             return None
 
-        # Combine all recorded chunks
         all_audio = np.concatenate(self.audio_buffer).astype(np.int16)
         sf.write("meeting_audio.wav", all_audio, 48000, subtype="PCM_16")
-        print("✅ Audio saved to meeting_audio.wav")
+        print("Audio saved to meeting_audio.wav")
         return "meeting_audio.wav"
+    
+    # Summarize text using OpenAI
+    async def summarize_text(self, text):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an AI that summarizes multi-speaker meeting transcripts."
+                            "Write a concise summary focusing on key topics, decisions, and action items."
+                            "Ignore filler words or greetings. Write in a bullet points."
+                            "Focus on tasks assigned to each individual and any general descisions made."
+                        ),
+                    },
+                    {"role": "user", "content": text},
+                ],
+                max_tokens=300,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            log.error(f"Error during summarization: {e}")
+            return None
 
+    # Command to start recording
     @commands.command(name="record")
     async def record(self, ctx):
-        """Join the user's voice channel and start recording."""
         if ctx.author.voice is None:
-            return await ctx.send("❌ You must be in a voice channel to use this command.")
+            return await ctx.send("You must be in a voice channel to use this command.")
 
         channel = ctx.author.voice.channel
         self.vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
@@ -88,33 +105,47 @@ class MeetingNotesCog(commands.Cog):
         self.recorder = CombinedRecorder(self)
         self.vc.listen(self.recorder)
 
-        await ctx.send("🎙️ Started recording... use `!stop` to end.")
+        await ctx.send("Started recording... use `!stop` to end.")
 
+    # Command to stop recording and process audio
     @commands.command(name="stop")
     async def stop(self, ctx):
-        """Stop recording and transcribe."""
         if not self.vc:
-            return await ctx.send("⚠️ I'm not currently recording.")
+            return await ctx.send("I'm not currently recording.")
 
         await self.vc.disconnect(force=True)
-        await ctx.send("🔇 Stopped recording. Processing audio...")
+        await ctx.send("Stopped recording. Processing meeting audio...")
 
         file_path = await self.cleanup()
         if not file_path:
-            return await ctx.send("⚠️ No audio captured.")
+            return await ctx.send("No audio captured.")
 
         await asyncio.sleep(2)
 
+        # Transcribe audio using OpenAI Whisper
         try:
             with open(file_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file
                 )
-            await ctx.send(f"📝 Transcription:\n```{transcription.text}```")
+            summary = await self.summarize_text(transcription.text)
+
+            if summary:
+                await ctx.send(f"**Meeting Summary:**\n```{summary}```")
+            else:
+                await ctx.send("Could not generate a summary.")
         except Exception as e:
-            await ctx.send(f"❌ Error during transcription: {e}")
+            await ctx.send(f"Error processing meeting: {e}")
             log.error(e)
+
+        # Clean up audio file
+        try:
+            await asyncio.sleep(1)
+            os.remove(file_path)
+            await ctx.send("Cleaned up audio file.")
+        except OSError as e:
+            log.warning(f"Could not delete audio file: {e}")
 
 
 async def setup(bot):
