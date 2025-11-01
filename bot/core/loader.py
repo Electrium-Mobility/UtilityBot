@@ -13,10 +13,10 @@ def iter_feature_extensions():
             yield f"bot.features.{name}.cog"
 
 
-def load_feature_extensions(bot) -> None:
+async def load_feature_extensions(bot):
     for ext in iter_feature_extensions():
         try:
-            bot.load_extension(ext)
+            await bot.load_extension(ext)
             logger.info(f"Loaded extension: {ext}")
         except Exception as e:
             logger.exception(f"Failed to load extension: {ext}: {e}")

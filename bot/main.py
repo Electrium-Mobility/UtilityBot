@@ -7,6 +7,8 @@ from bot.core.logging import setup_logging
 from bot.core.loader import load_feature_extensions
 from bot.config import settings
 
+import os
+import asyncio
 
 def create_bot() -> commands.Bot:
     intents = discord.Intents.default()
@@ -15,10 +17,12 @@ def create_bot() -> commands.Bot:
     return bot
 
 
-def main() -> None:
+async def main_async():
     load_dotenv()
-    setup_logging()
+    logging.basicConfig(level=logging.INFO)
+
     logger = logging.getLogger("utilitybot")
+    
 
     bot = create_bot()
 
@@ -27,15 +31,17 @@ def main() -> None:
         logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
     # Load all feature module extensions
-    load_feature_extensions(bot)
+    await load_feature_extensions(bot)
 
-    token = settings.token
+    token = os.getenv("DISCORD_TOKEN", "")
     if not token:
         logger.error("DISCORD_TOKEN is not set. Please configure it in .env.")
         return
 
-    bot.run(token)
+    await bot.start(token)
 
+def main():
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main()
