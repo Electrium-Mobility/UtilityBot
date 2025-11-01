@@ -8,13 +8,18 @@ import os
 import logging
 from dotenv import load_dotenv
 import ctypes
+from deepgram import DeepgramClient
 
 log = logging.getLogger(__name__)
 
 # Initialize OpenAI client
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+
+client = OpenAI(api_key=os.environ.get('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
+
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+
+deepgram = DeepgramClient(api_key=DEEPGRAM_API_KEY)
 
 # Load Opus DLL for audio decoding
 opus_path = r"C:\Users\tanis\Desktop\UtilityBot\bot\library"
@@ -73,7 +78,7 @@ class MeetingNotesCog(commands.Cog):
     async def summarize_text(self, text):
         try:
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="deepseek-chat",
                 messages=[
                     {
                         "role": "system",
@@ -86,6 +91,7 @@ class MeetingNotesCog(commands.Cog):
                     },
                     {"role": "user", "content": text},
                 ],
+                stream=False,
                 max_tokens=300,
             )
             return response.choices[0].message.content.strip()
@@ -125,11 +131,13 @@ class MeetingNotesCog(commands.Cog):
         # Transcribe audio using OpenAI Whisper
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file
+                response = deepgram.listen.v1.media.transcribe_file(
+                    request=audio_file.read(),
+                    model="nova-3",
+                    smart_format=True,
                 )
-            summary = await self.summarize_text(transcription.text)
+            transcript_text = response.results.channels[0].alternatives[0].transcript
+            summary = await self.summarize_text(transcript_text)
 
             if summary:
                 await ctx.send(f"**Meeting Summary:**\n```{summary}```")
