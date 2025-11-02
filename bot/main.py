@@ -1,13 +1,14 @@
 import logging
+import os
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
+import ssl
+import aiohttp
 
 from bot.core.logging import setup_logging
 from bot.core.loader import load_feature_extensions
-from bot.config import settings
 
-import os
 import asyncio
 
 def create_bot() -> commands.Bot:
@@ -28,10 +29,13 @@ async def main_async():
 
     @bot.event
     async def on_ready():
-        logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
-
-    # Load all feature module extensions
-    await load_feature_extensions(bot)
+        user = bot.user
+        if user is None:
+            logger.info("Logged in but bot.user is None")
+        else:
+            logger.info(f"Logged in as {user} (ID: {user.id})")
+        # Load all feature module extensions
+        await load_feature_extensions(bot)
 
     token = os.getenv("DISCORD_TOKEN", "")
     if not token:
