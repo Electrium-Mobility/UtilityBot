@@ -79,35 +79,22 @@ async def _ask_deepseek(question: str, knowledge_document: str) -> Optional[str]
     except Exception:
         logger.exception("DeepSeek API call failed")
         return None
-
+import aiohttp
+import os
 
 class SmartQACog(commands.Cog):
     """Smart Q&A feature implementation."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # get API info
+        self.api_url = os.getenv("OUTLINE_API_URL")
+        self.api_token = os.getenv("OUTLINE_API_KEY")
 
     @commands.command(name="qa")
-    async def qa(self, ctx: commands.Context, *, question: Optional[str] = None):
-
-        if not question or not question.strip():
-            await ctx.send("Please ask me a question! For example: `!qa What is Electrium Mobility?`")
-            return
-            
-        # Prefer DeepSeek if available, otherwise returns AI search not available right now. Please try again later.
-        answer = await _ask_deepseek(question, _get_knowledge_document())
-        if not answer:
-            answer = ["AI search not available"]        
-        # Send response with normal-sized text in description, compact title label
-        embed = discord.Embed(
-            title="💡Smart Q&A",
-            description=answer,
-            color=0x00ff00
-        )
-        embed.add_field(name="Your Question", value=question, inline=False)
-        # No footer (do not include "Asked by ...")
-        
-        await ctx.send(embed=embed)
+    async def qa(self, ctx: commands.Context, *, question: str):
+        """Placeholder command: accept a question and return a placeholder response."""
+        await ctx.send(f"Received question: {question}\n(Placeholder response, to be implemented)")
 
 
 async def setup(bot: commands.Bot):
