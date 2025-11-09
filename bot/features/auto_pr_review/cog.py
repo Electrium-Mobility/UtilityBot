@@ -286,9 +286,6 @@ class AutoPRReviewCog(commands.Cog):
         with open(STORAGE_PATH, "w", encoding="utf-8") as f:
             json.dump(self.tracked_feeds, f, indent=2)
 
-    def make_atom_url(self, owner: str, repo: str) -> str:
-        return f"https://github.com/{owner}/{repo}/commits.atom"
-
     def parse_atom_entries(self, xml_text: str) -> list:
         """Return list of entries as dicts with keys id,title,link,updated,author"""
         entries = []
@@ -317,32 +314,33 @@ class AutoPRReviewCog(commands.Cog):
 
     @commands.command(name="trackrepo", aliases=["track"])
     async def trackrepo(self, ctx: commands.Context, repo: str):
-        """Start tracking a repo's commits via its Atom feed.
-        Usage: !trackrepo owner/repo or full URL
+        """Start tracking a repo's commits from Electrium-Mobility Github via its Atom feed.
+        Usage: !trackrepo repo or full URL
         Notifications will be sent to the current channel.
         """
-        # Accept owner/repo or full github url
-        m = re.match(r"^https?://github\.com/([\w-]+)/([\w.-]+)(/)?$", repo)
+
+        # Accept repo or full github url
+        m = re.match(r"^https?://github\.com/Electrium-Mobility/([\w-]+)(/)?$", repo)
         if m:
-            owner, r = m.group(1), m.group(2)
+            r = m.group(1)
         else:
-            m2 = re.match(r"^([\w-]+)/([\w.-]+)$", repo)
+            m2 = re.match(r"([\w.-]+)$", repo)
             if not m2:
                 await ctx.send(
-                    "❌ Please provide a repo as owner/repo or a full GitHub URL."
+                    "❌ Please provide a repo name or a full GitHub URL."
                 )
                 return
-            owner, r = m2.group(1), m2.group(2)
+            r = m2.group(1)
 
-        key = f"{owner}/{r}"
-        atom_url = self.make_atom_url(owner, r)
+        key = f"Electrium-Mobility/{r}"
+        atom_url = f"https://github.com/Electrium-Mobility/{r}/commits.atom"
 
         # fetch feed once to get latest id
         response = requests.get(atom_url)
 
         if response.status_code != 200:
             await ctx.send(
-                f"❌ Failed to fetch feed for {key} (HTTP {response.status_code})."
+                f"❌ Repository `{key}` not found. Please provide a repository from Electrium-Mobility."
             )
         else:
 
@@ -360,22 +358,25 @@ class AutoPRReviewCog(commands.Cog):
     @commands.command(name="untrackrepo", aliases=["untrack"])
     async def untrackrepo(self, ctx: commands.Context, repo: str):
         """Stop tracking a repo's atom feed."""
-        m = re.match(r"^https?://github\.com/([\w-]+)/([\w.-]+)(/)?$", repo)
+        # Accept repo or full github url
+        m = re.match(r"^https?://github\.com/Electrium-Mobility/([\w-]+)(/)?$", repo)
         if m:
-            key = f"{m.group(1)}/{m.group(2)}"
+            r = m.group(1)
         else:
-            m2 = re.match(r"^([\w-]+)/([\w.-]+)$", repo)
+            m2 = re.match(r"([\w.-]+)$", repo)
             if not m2:
                 await ctx.send(
-                    "❌ Please provide a repo as owner/repo or a full GitHub URL."
+                    "❌ Please provide a repo name or a full GitHub URL."
                 )
                 return
-            key = f"{m2.group(1)}/{m2.group(2)}"
+            r = m2.group(1)
+
+        key = f"Electrium-Mobility/{r}"
 
         if key in self.tracked_feeds:
             del self.tracked_feeds[key]
             self.save_tracked_feeds()
-            await ctx.send(f"✅ Stopped tracking {key}.")
+            await ctx.send(f"✅ Stopped tracking `{key}`.")
         else:
             await ctx.send("❌ That repository is not being tracked.")
 
@@ -407,7 +408,7 @@ class AutoPRReviewCog(commands.Cog):
                         xml_content = await response.text()
                         entries = self.parse_atom_entries(xml_content)
                 except Exception as e:
-                    print(f"Error fetching feed {key}: {e}")
+                    print(f"Error fetching feed `{key}`: {e}")
                     continue
 
                 if not entries:
@@ -429,7 +430,7 @@ class AutoPRReviewCog(commands.Cog):
                 channel = self.bot.get_channel(info.get("channel_id"))
                 for e in reversed(new_entries):
                     msg = (
-                        f"🔔 New commit in **{key}**\n"
+                        f"🔔 New commit in `{key}`\n"
                         f"**Author:** {e.get('author', '')}\n"
                         f"**Message:** {e.get('title', '')}\n"
                         f"[Link to commit]({e.get('link', '')})"
