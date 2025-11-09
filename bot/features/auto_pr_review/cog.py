@@ -436,9 +436,22 @@ class AutoPRReviewCog(commands.Cog):
                         f"[Link to commit]({e.get('link', '')})"
                         # ? Maybe include timestamp of commit
                     )
+
+                    # analyze commit information with deepseek
+                    deepseek_response = self.analyze_diff(e.get('link', ''))
+
+                    # Handle case where DEEPSEEK_API_KEY is not set
+                    if isinstance(deepseek_response, int):  # -1 returned when API key missing
+                        deepseek_response = "⚠️ AI analysis unavailable (DEEPSEEK_API_KEY not configured)"
+                    else:
+                        deepseek_response = (
+                            deepseek_response.replace("\\n", "\n").replace("\n**", "\n\n**").strip()
+                        )
+
                     try:
                         if channel:
                             await channel.send(msg)
+                            await channel.send(deepseek_response)
                         else:
                             # fallback: skip or implement owner DM
                             pass
