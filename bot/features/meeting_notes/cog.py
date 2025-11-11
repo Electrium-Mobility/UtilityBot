@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 import ctypes
 from deepgram import DeepgramClient
 from pathlib import Path
+from googleapiclient.discovery import build
+from google.oauth2.service_account import Credentials
+from googleapiclient.errors import HttpError
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 
@@ -139,6 +143,50 @@ class MeetingNotesCog(commands.Cog):
         except Exception as e:
             log.error(f"Error during summarization: {e}")
             return None
+
+
+        # Append meeting summary to Google Doc
+    async def append_summary_to_google_doc(self, summary_text):
+        google_doc_id = os.getenv("GOOGLE_DOC_ID")
+        service_account_file = os.getenv("GOOGLE_DOC_CREDENTIALS")
+
+        if not google_doc_id or not service_account_file:
+            log.error("Missing GOOGLE_DOC_ID or GOOGLE_DOC_CREDENTIALS in environment variables.")
+            return
+
+        try:
+            creds = Credentials.from_service_account_file(service_account_file, scopes=['https://www.googleapis.com/auth/documents'])
+            service = build('docs', 'v1', credentials=creds)
+
+            document = service.documents().get(documentId=google_doc_id).execute()
+            content = document.get('body', {}).get('content', [])
+
+            end_index = None
+            for element in reversed(content):
+                if 'endIndex' in element:
+                    end_index = element['endIndex']
+                    break
+            if end_index is None:
+                raise ValueError("Unable to determine document end index.")
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            text_to_insert = f"\n\n🕒 Summary added on {timestamp}\n{summary_text}\n"
+
+            requests = [{
+                'insertText': {
+                    'location': {'index': end_index - 1},
+                    'text': text_to_insert
+                }
+            }]
+
+            service.documents().batchUpdate(documentId=google_doc_id, body={'requests': requests}).execute()
+            log.info("✅ Summary appended successfully to Google Doc.")
+
+        except HttpError as e:
+            log.error(f"HTTP error occurred: {e}")
+        except Exception as e:
+            log.error(f"Unexpected error: {e}")
+
 
     # Command to start recording
     @commands.command(name="record")
