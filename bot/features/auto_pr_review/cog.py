@@ -154,6 +154,11 @@ class AutoPRReviewCog(commands.Cog):
                 2. **Explain** the purpose or motivation behind the change if possible.  
                 3. **Identify** any potential issues (bugs, performance, style, or security risks).  
                 4. **Suggest** specific improvements or refactorings if relevant.  
+                5. **Generate a Recommendation Score (0–100)** indicating how ready this pull request is for approval, where:
+                                - 90–100: Ready to merge (high quality, minimal issues)
+                                - 70–89: Acceptable with minor improvements
+                                - 50–69: Needs moderate revisions before approval
+                                - Below 50: Requires major changes or rework
 
 
                 NOTE:Keep the tone concise, constructive, and focused on practical insights.
@@ -169,6 +174,13 @@ class AutoPRReviewCog(commands.Cog):
                 **Potential Issues**
                 - Missing error handling for API calls
                 - No validation for missing environment variables
+
+                **Suggestions**
+                - Add try/except around API calls
+                - Validate environment variables before initialization
+
+                **Recommendation Score**
+                - 85
             """
 
             response = requests.post(
