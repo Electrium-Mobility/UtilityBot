@@ -7,6 +7,7 @@ import json
 import re
 import os
 import json
+import asyncio
 
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # Deep Seek API
@@ -19,6 +20,58 @@ GITHUB_PAT = os.getenv(
     "GITHUB_PAT"
 )  # github pat is needed to make requests to GitHub API
 
+#retry/backoff for transient errors + rate limits
+async def api_call_retry(session, method, url, retries=3, backoff_factor=1, headers=None, **kwargs):
+        for attempt in range(retries + 1):
+            try:
+                async with session.request(method, url, headers=headers, **kwargs) as resp:
+                    if resp.status == 429:
+                        retry_after = resp.headers.get("retry after")
+                        if retry_after:
+                            await asyncio.sleep(float(retry_after))
+                        else:
+                            await asyncio.sleep(backoff_factor * (2 ** attempt))
+                        continue
+                    if resp.status in {500, 502, 503, 504}:
+                        await asyncio.sleep(backoff_factor * (2** attempt))
+                        continue
+
+                    return resp
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                await asyncio.sleep(backoff_factor * (2 ** attempt))
+        raise Exception(f"api request failed after {retries} retries")
+
+
+#async functions for requests
+async def get_file_paths(url, headers):
+            async with aiohttp.ClientSession() as session:
+                resp = await api_call_retry(session, "GET", url, headers=headers)
+                return resp
+                
+async def get_commit_information(url, headers):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "GET", url, headers=headers)
+            return resp
+            
+async def analyze_with_ai(url, headers, json, timeout):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "POST", url, headers=headers, json=json, timeout=timeout)
+            return resp
+            
+async def get_diff(url, headers):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "GET", url, headers=headers)
+            return resp
+            
+async def get_pulls(url):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "GET", url)
+            return resp
+            
+async def get_feed(url):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "GET", url)
+            return resp
 
 class AutoPRReviewCog(commands.Cog):
     """Auto PR Review Assistant feature placeholder implementation."""
@@ -29,16 +82,15 @@ class AutoPRReviewCog(commands.Cog):
         self.load_tracked_feeds()
         self.poll_atom_feeds.start()
 
+
     # method that returns files to ignore when putting it into ai
     def ignore_files(self, repo):
 
-        raw_response = requests.get(
-            f"https://api.github.com/repos/Electrium-Mobility/{repo}/git/trees/main?recursive=1",
-            headers={
+        headers={
                 "Authorization": f"token {GITHUB_PAT}",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1521.3 Safari/537.36",
-            },
-        )
+            }
+        raw_response = asyncio.run(get_file_paths(f"https://api.github.com/repos/Electrium-Mobility/{repo}/git/trees/main?recursive=1", headers))
 
         if raw_response.status_code != 200:
             print(f"Error: {raw_response.status_code}")
@@ -81,13 +133,11 @@ class AutoPRReviewCog(commands.Cog):
 
     # method to get number of additions and deletions
     def commit_information(self, repo, commit_sha):
-        raw_response = requests.get(
-            f"https://api.github.com/repos/Electrium-Mobility/{repo}/commits/{commit_sha}",
-            headers={
+        headers = {
                 "Authorization": f"token {GITHUB_PAT}",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1521.3 Safari/537.36",
-            },
-        )
+            }
+        raw_response = asyncio.run(get_commit_information(f"https://api.github.com/repos/Electrium-Mobility/{repo}/commits/{commit_sha}", headers))
 
         if raw_response.status_code != 200:
             print(f"Error: {raw_response.status_code}")
@@ -183,10 +233,8 @@ class AutoPRReviewCog(commands.Cog):
                 - 85
             """
 
-            response = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-                json={
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}
+            json={
                     "model": "deepseek-coder",
                     "messages": [
                         {
@@ -196,9 +244,10 @@ class AutoPRReviewCog(commands.Cog):
                         {"role": "user", "content": prompt},
                     ],
                     "max_tokens": MAX_TOKEN,
-                },
-                timeout=30,
-            )
+                }
+            timeout=30
+
+            response = asyncio.run(analyze_with_ai("https://api.deepseek.com/v1/chat/completions", headers, json, timeout))
 
             data = response.json()
             return data["choices"][0]["message"]["content"].strip()
@@ -206,9 +255,8 @@ class AutoPRReviewCog(commands.Cog):
             return f"Error with deepseek: {e}"
 
     def analyze_diff(self, url):
-        diffResponse = requests.get(
-            url, headers={"Accept": "application/vnd.github.v3.diff"}
-        )
+        headers={"Accept": "application/vnd.github.v3.diff"}
+        diffResponse = asyncio.run(get_diff(url, headers))
 
         diff_text = diffResponse.text
         diff_changes = self.extract_changes(diff_text)
@@ -234,9 +282,7 @@ class AutoPRReviewCog(commands.Cog):
 
         project, pullNumber = match.groups()
 
-        response = requests.get(
-            f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}"
-        )
+        response = asyncio.run(get_pulls(f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}"))
 
         if response.status_code != 200:
             await ctx.send(
@@ -348,7 +394,7 @@ class AutoPRReviewCog(commands.Cog):
         atom_url = f"https://github.com/Electrium-Mobility/{r}/commits.atom"
 
         # fetch feed once to get latest id
-        response = requests.get(atom_url)
+        response = asyncio.run(get_feed(atom_url))
 
         if response.status_code != 200:
             await ctx.send(
