@@ -92,11 +92,11 @@ class AutoPRReviewCog(commands.Cog):
             }
         raw_response = await get_file_paths(f"https://api.github.com/repos/Electrium-Mobility/{repo}/git/trees/main?recursive=1", headers)
 
-        if raw_response.status_code != 200:
-            print(f"Error: {raw_response.status_code}")
+        if raw_response.status != 200:
+            print(f"Error: {raw_response.status}")
             return
 
-        response_json = raw_response.json()
+        response_json = await raw_response.json()
 
         paths = [item["path"] for item in response_json["tree"]]
 
@@ -139,11 +139,11 @@ class AutoPRReviewCog(commands.Cog):
             }
         raw_response = await get_commit_information(f"https://api.github.com/repos/Electrium-Mobility/{repo}/commits/{commit_sha}", headers)
 
-        if raw_response.status_code != 200:
-            print(f"Error: {raw_response.status_code}")
+        if raw_response.status != 200:
+            print(f"Error: {raw_response.status}")
             return
 
-        parse_response = raw_response.json()
+        parse_response = await raw_response.json()
 
         deleted_lines = parse_response["stats"]["deletions"]
         added_lines = parse_response["stats"]["additions"]
@@ -178,7 +178,7 @@ class AutoPRReviewCog(commands.Cog):
             self.filter_lines(removed_lines)[:MAX_LINES],
         ]
 
-    def analyze_with_deepseek(self, changes):
+    async def analyze_with_deepseek(self, changes):
         added_lines = changes[0]
         removed_lines = changes[1]
 
@@ -247,9 +247,9 @@ class AutoPRReviewCog(commands.Cog):
                 }
             timeout=30
 
-            response = asyncio.run(analyze_with_ai("https://api.deepseek.com/v1/chat/completions", headers, json, timeout))
+            response = await analyze_with_ai("https://api.deepseek.com/v1/chat/completions", headers, json, timeout)
 
-            data = response.json()
+            data = await response.json()
             return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
             return f"Error with deepseek: {e}"
@@ -258,9 +258,9 @@ class AutoPRReviewCog(commands.Cog):
         headers={"Accept": "application/vnd.github.v3.diff"}
         diffResponse = await get_diff(url, headers)
 
-        diff_text = diffResponse.text
+        diff_text = await diffResponse.text()
         diff_changes = self.extract_changes(diff_text)
-        return self.analyze_with_deepseek(diff_changes)
+        return await self.analyze_with_deepseek(diff_changes)
 
     @commands.command(name="prreview")
     @commands.cooldown(
@@ -284,14 +284,14 @@ class AutoPRReviewCog(commands.Cog):
 
         response = await get_pulls(f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}")
 
-        if response.status_code != 200:
+        if response.status != 200:
             await ctx.send(
                 f"Failed to fetch PR details, Please try again different PR link"
             )
         else:
-            responseJson = response.json()
+            responseJson = await response.json()
 
-            deepseek_response = self.analyze_diff(
+            deepseek_response = await self.analyze_diff(
                 f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}"
             )
             
@@ -396,15 +396,16 @@ class AutoPRReviewCog(commands.Cog):
         atom_url = self.make_atom_url(owner, r)
 
         # fetch feed once to get latest id
-        response = asyncio.run(get_feed(atom_url))
+        response = await get_feed(atom_url)
 
-        if response.status_code != 200:
+        if response.status != 200:
             await ctx.send(
-                f"❌ Failed to fetch feed for {key} (HTTP {response.status_code})."
+                f"❌ Failed to fetch feed for {key} (HTTP {response.status})."
             )
         else:
 
-            entries = self.parse_atom_entries(response.content)
+            content = await response.text()
+            entries = self.parse_atom_entries(content)
             last_id = entries[0]["id"] if entries else ""
 
             self.tracked_feeds[key] = {
