@@ -1,12 +1,12 @@
 from urllib import request
 from discord.ext import tasks, commands
-import requests
 import aiohttp
 import xml.etree.ElementTree as ET
 import json
 import re
 import os
 import json
+import asyncio
 
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")  # Deep Seek API
@@ -19,6 +19,58 @@ GITHUB_PAT = os.getenv(
     "GITHUB_PAT"
 )  # github pat is needed to make requests to GitHub API
 
+#retry/backoff for transient errors + rate limits
+async def api_call_retry(session, method, url, retries=3, backoff_factor=1, headers=None, **kwargs):
+        for attempt in range(retries + 1):
+            try:
+                async with session.request(method, url, headers=headers, **kwargs) as resp:
+                    if resp.status == 429:
+                        retry_after = resp.headers.get("retry after")
+                        if retry_after:
+                            await asyncio.sleep(float(retry_after))
+                        else:
+                            await asyncio.sleep(backoff_factor * (2 ** attempt))
+                        continue
+                    if resp.status in {500, 502, 503, 504}:
+                        await asyncio.sleep(backoff_factor * (2** attempt))
+                        continue
+
+                    return resp
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                await asyncio.sleep(backoff_factor * (2 ** attempt))
+        raise Exception(f"api request failed after {retries} retries")
+
+
+#async functions for requests
+async def get_file_paths(url, headers):
+            async with aiohttp.ClientSession() as session:
+                resp = await api_call_retry(session, "GET", url, headers=headers)
+                return resp
+                
+async def get_commit_information(url, headers):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "GET", url, headers=headers)
+            return resp
+            
+async def analyze_with_ai(url, headers, json, timeout):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "POST", url, headers=headers, json=json, timeout=timeout)
+            return resp
+            
+async def get_diff(url, headers):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "GET", url, headers=headers)
+            return resp
+            
+async def get_pulls(url):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "GET", url)
+            return resp
+            
+async def get_feed(url):
+        async with aiohttp.ClientSession() as session:
+            resp = await api_call_retry(session, "GET", url)
+            return resp
 
 class AutoPRReviewCog(commands.Cog):
     """Auto PR Review Assistant feature placeholder implementation."""
@@ -29,22 +81,21 @@ class AutoPRReviewCog(commands.Cog):
         self.load_tracked_feeds()
         self.poll_atom_feeds.start()
 
-    # method that returns files to ignore when putting it into ai
-    def ignore_files(self, repo):
 
-        raw_response = requests.get(
-            f"https://api.github.com/repos/Electrium-Mobility/{repo}/git/trees/main?recursive=1",
-            headers={
+    # method that returns files to ignore when putting it into ai
+    async def ignore_files(self, repo):
+
+        headers={
                 "Authorization": f"token {GITHUB_PAT}",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1521.3 Safari/537.36",
-            },
-        )
+            }
+        raw_response = await get_file_paths(f"https://api.github.com/repos/Electrium-Mobility/{repo}/git/trees/main?recursive=1", headers)
 
-        if raw_response.status_code != 200:
-            print(f"Error: {raw_response.status_code}")
+        if raw_response.status != 200:
+            print(f"Error: {raw_response.status}")
             return
 
-        response_json = raw_response.json()
+        response_json = await raw_response.json()
 
         paths = [item["path"] for item in response_json["tree"]]
 
@@ -80,20 +131,18 @@ class AutoPRReviewCog(commands.Cog):
         return ignore_files
 
     # method to get number of additions and deletions
-    def commit_information(self, repo, commit_sha):
-        raw_response = requests.get(
-            f"https://api.github.com/repos/Electrium-Mobility/{repo}/commits/{commit_sha}",
-            headers={
+    async def commit_information(self, repo, commit_sha):
+        headers = {
                 "Authorization": f"token {GITHUB_PAT}",
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1521.3 Safari/537.36",
-            },
-        )
+            }
+        raw_response = await get_commit_information(f"https://api.github.com/repos/Electrium-Mobility/{repo}/commits/{commit_sha}", headers)
 
-        if raw_response.status_code != 200:
-            print(f"Error: {raw_response.status_code}")
+        if raw_response.status != 200:
+            print(f"Error: {raw_response.status}")
             return
 
-        parse_response = raw_response.json()
+        parse_response = await raw_response.json()
 
         deleted_lines = parse_response["stats"]["deletions"]
         added_lines = parse_response["stats"]["additions"]
@@ -128,7 +177,7 @@ class AutoPRReviewCog(commands.Cog):
             self.filter_lines(removed_lines)[:MAX_LINES],
         ]
 
-    def analyze_with_deepseek(self, changes):
+    async def analyze_with_deepseek(self, changes):
         added_lines = changes[0]
         removed_lines = changes[1]
 
@@ -183,10 +232,8 @@ class AutoPRReviewCog(commands.Cog):
                 - 85
             """
 
-            response = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
-                json={
+            headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}
+            json={
                     "model": "deepseek-coder",
                     "messages": [
                         {
@@ -196,23 +243,23 @@ class AutoPRReviewCog(commands.Cog):
                         {"role": "user", "content": prompt},
                     ],
                     "max_tokens": MAX_TOKEN,
-                },
-                timeout=30,
-            )
+                }
+            timeout=30
 
-            data = response.json()
+            response = await analyze_with_ai("https://api.deepseek.com/v1/chat/completions", headers, json, timeout)
+
+            data = await response.json()
             return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
             return f"Error with deepseek: {e}"
 
-    def analyze_diff(self, url):
-        diffResponse = requests.get(
-            url, headers={"Accept": "application/vnd.github.v3.diff"}
-        )
+    async def analyze_diff(self, url):
+        headers={"Accept": "application/vnd.github.v3.diff"}
+        diffResponse = await get_diff(url, headers)
 
-        diff_text = diffResponse.text
+        diff_text = await diffResponse.text()
         diff_changes = self.extract_changes(diff_text)
-        return self.analyze_with_deepseek(diff_changes)
+        return await self.analyze_with_deepseek(diff_changes)
 
     @commands.command(name="prreview")
     @commands.cooldown(
@@ -234,18 +281,16 @@ class AutoPRReviewCog(commands.Cog):
 
         project, pullNumber = match.groups()
 
-        response = requests.get(
-            f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}"
-        )
+        response = await get_pulls(f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}")
 
-        if response.status_code != 200:
+        if response.status != 200:
             await ctx.send(
                 f"Failed to fetch PR details, Please try again different PR link"
             )
         else:
-            responseJson = response.json()
+            responseJson = await response.json()
 
-            deepseek_response = self.analyze_diff(
+            deepseek_response = await self.analyze_diff(
                 f"https://api.github.com/repos/Electrium-Mobility/{project}/pulls/{pullNumber}"
             )
             
@@ -271,6 +316,12 @@ class AutoPRReviewCog(commands.Cog):
             else:
                 merge_status = "❓ **Merge status unknown (GitHub still checking...)**"
 
+            # record contributor statistics (additions, deletions, and author)
+            author = responseJson['user']['login']
+            additions = responseJson['additions']
+            deletions = responseJson['deletions']
+            self.update_contributor_stats(author, additions, deletions, project)
+
             await ctx.send(
                 f"✅ **Pull Request Received!**\n\n"
                 f"📦 **Repository:** `{project}`\n"
@@ -288,15 +339,66 @@ class AutoPRReviewCog(commands.Cog):
         if os.path.exists(STORAGE_PATH):
             try:
                 with open(STORAGE_PATH, "r", encoding="utf-8") as f:
-                    self.tracked_feeds = json.load(f)
+                    data = json.load(f)
+                    # backward compatibility
+                    if isinstance(data, dict):
+                        if "feeds" in data:
+                            self.tracked_feeds = data["feeds"]
+                            self.contributor_stats = data.get("contributors", {})
+                        else:
+                            self.tracked_feeds = data
+                            self.contributor_stats = {}
+                    else:
+                        self.tracked_feeds = {}
+                        self.contributor_stats = {}
             except Exception:
                 self.tracked_feeds = {}
-        else:
-            self.tracked_feeds = {}
+                self.contributor_stats = {}
+                self.contributor_stats = {}
+            else:
+                self.tracked_feeds = {}
+                self.contributor_stats = {}
 
     def save_tracked_feeds(self):
         with open(STORAGE_PATH, "w", encoding="utf-8") as f:
-            json.dump(self.tracked_feeds, f, indent=2)
+            data = {
+                "feeds": self.tracked_feeds,
+                "contributors": self.contributor_stats
+            }
+            json.dump(data, f, indent=2)
+
+    def update_contributor_stats(self, author: str, additions: int, deletions: int, repo: str = None):
+        # update contributor statistics with lines changed.
+        if author not in self.contributor_stats:
+            self.contributor_stats[author] = {
+                "total_additions": 0,
+                "total_deletions": 0,
+                "total_changes": 0,
+                "pr_count": 0,
+                "repos": {}
+            }
+        
+        # update overall stats
+        self.contributor_stats[author]["total_additions"] += additions
+        self.contributor_stats[author]["total_deletions"] += deletions
+        self.contributor_stats[author]["total_changes"] += (additions + deletions)
+        self.contributor_stats[author]["pr_count"] += 1
+        
+        # update per-repo stats if repo is provided
+        if repo:
+            if repo not in self.contributor_stats[author]["repos"]:
+                self.contributor_stats[author]["repos"][repo] = {
+                    "additions": 0,
+                    "deletions": 0,
+                    "changes": 0,
+                    "pr_count": 0
+                }
+            self.contributor_stats[author]["repos"][repo]["additions"] += additions
+            self.contributor_stats[author]["repos"][repo]["deletions"] += deletions
+            self.contributor_stats[author]["repos"][repo]["changes"] += (additions + deletions)
+            self.contributor_stats[author]["repos"][repo]["pr_count"] += 1
+        
+        self.save_tracked_feeds()
 
     def parse_atom_entries(self, xml_text: str) -> list:
         """Return list of entries as dicts with keys id,title,link,updated,author"""
@@ -348,15 +450,16 @@ class AutoPRReviewCog(commands.Cog):
         atom_url = f"https://github.com/Electrium-Mobility/{r}/commits.atom"
 
         # fetch feed once to get latest id
-        response = requests.get(atom_url)
+        response = await get_feed(atom_url)
 
-        if response.status_code != 200:
+        if response.status != 200:
             await ctx.send(
-                f"❌ Repository `{key}` not found. Please provide a repository from Electrium-Mobility."
+                f"❌ Failed to fetch feed for {key} (HTTP {response.status})."
             )
         else:
 
-            entries = self.parse_atom_entries(response.content)
+            content = await response.text()
+            entries = self.parse_atom_entries(content)
             last_id = entries[0]["id"] if entries else ""
 
             self.tracked_feeds[key] = {
@@ -404,6 +507,66 @@ class AutoPRReviewCog(commands.Cog):
             lines.append(f"{key} → {ch_text}")
         await ctx.send("Tracked feeds:\n" + "\n - ".join(lines))
 
+    @commands.command(name="contributorstats", aliases=["stats", "contributors"])
+    async def contributorstats(self, ctx: commands.Context, contributor: str = None):
+        # Display stats for contributors showing lines changed.
+        # If no username is provided, shows stats for all contributors.
+        if not self.contributor_stats:
+            await ctx.send("No contributor statistics available yet.")
+            return
+        
+        if contributor:
+            # show stats for specific contributor
+            if contributor not in self.contributor_stats:
+                await ctx.send(f"No statistics found for contributor `{contributor}`.")
+                return
+            
+            stats = self.contributor_stats[contributor]
+            repo_lines = []
+            for repo, repo_stats in stats["repos"].items():
+                repo_lines.append(
+                    f"  • `{repo}`: {repo_stats['changes']:,} lines "
+                    f"(+{repo_stats['additions']:,} / -{repo_stats['deletions']:,}), "
+                    f"{repo_stats['pr_count']} PR{'s' if repo_stats['pr_count'] != 1 else ''}"
+                )
+            
+            repo_breakdown = "\n".join(repo_lines) if repo_lines else "  No repository data"
+            
+            await ctx.send(
+                f"**Contributor Statistics for `{contributor}`**\n\n"
+                f"**Total Lines Changed:** {stats['total_changes']:,}\n"
+                f"**Lines Added:** +{stats['total_additions']:,}\n"
+                f"**Lines Deleted:** -{stats['total_deletions']:,}\n"
+                f"**Pull Requests:** {stats['pr_count']}\n\n"
+                f"**Per Repository:**\n{repo_breakdown}"
+            )
+        else:
+            # show stats for all contributors (sorted by total changes)
+            sorted_contributors = sorted(
+                self.contributor_stats.items(),
+                key=lambda x: x[1]["total_changes"],
+                reverse=True
+            )
+            
+            lines = []
+            for username, stats in sorted_contributors[:10]:
+                lines.append(
+                    f"**{username}**: {stats['total_changes']:,} lines changed "
+                    f"(+{stats['total_additions']:,} / -{stats['total_deletions']:,}), "
+                    f"{stats['pr_count']} PR{'s' if stats['pr_count'] != 1 else ''}"
+                )
+            
+            total_contributors = len(self.contributor_stats)
+            footer = ""
+            if total_contributors > 10:
+                footer = f"\n\n*Showing top 10 of {total_contributors} contributors. Use `!contributorstats <username>` for individual stats.*"
+            
+            await ctx.send(
+                f"**Contributor Statistics**\n\n"
+                + "\n".join(lines)
+                + footer
+            )
+
     @tasks.loop(minutes=1)
     async def poll_atom_feeds(self):
         if not self.tracked_feeds:
@@ -446,13 +609,12 @@ class AutoPRReviewCog(commands.Cog):
                         f"**Author:** {e.get('author', '')}\n"
                         f"**Message:** {e.get('title', '')}\n"
                         f"[Link to commit]({e.get('link', '')})"
-                        # ? Maybe include timestamp of commit
                     )
 
                     # analyze commit information with deepseek
                     deepseek_response = self.analyze_diff(e.get('link', ''))
 
-                    # Handle case where DEEPSEEK_API_KEY is not set
+                    # handle case where DEEPSEEK_API_KEY is not set
                     if isinstance(deepseek_response, int):  # -1 returned when API key missing
                         deepseek_response = "⚠️ AI analysis unavailable (DEEPSEEK_API_KEY not configured)"
                     else:
