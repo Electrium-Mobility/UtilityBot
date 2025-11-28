@@ -1,6 +1,5 @@
 from urllib import request
 from discord.ext import tasks, commands
-import requests
 import aiohttp
 import xml.etree.ElementTree as ET
 import json
@@ -317,6 +316,12 @@ class AutoPRReviewCog(commands.Cog):
             else:
                 merge_status = "❓ **Merge status unknown (GitHub still checking...)**"
 
+            # record contributor statistics (additions, deletions, and author)
+            author = responseJson['user']['login']
+            additions = responseJson['additions']
+            deletions = responseJson['deletions']
+            self.update_contributor_stats(author, additions, deletions, project)
+
             await ctx.send(
                 f"✅ **Pull Request Received!**\n\n"
                 f"📦 **Repository:** `{project}`\n"
@@ -334,15 +339,66 @@ class AutoPRReviewCog(commands.Cog):
         if os.path.exists(STORAGE_PATH):
             try:
                 with open(STORAGE_PATH, "r", encoding="utf-8") as f:
-                    self.tracked_feeds = json.load(f)
+                    data = json.load(f)
+                    # backward compatibility
+                    if isinstance(data, dict):
+                        if "feeds" in data:
+                            self.tracked_feeds = data["feeds"]
+                            self.contributor_stats = data.get("contributors", {})
+                        else:
+                            self.tracked_feeds = data
+                            self.contributor_stats = {}
+                    else:
+                        self.tracked_feeds = {}
+                        self.contributor_stats = {}
             except Exception:
                 self.tracked_feeds = {}
-        else:
-            self.tracked_feeds = {}
+                self.contributor_stats = {}
+                self.contributor_stats = {}
+            else:
+                self.tracked_feeds = {}
+                self.contributor_stats = {}
 
     def save_tracked_feeds(self):
         with open(STORAGE_PATH, "w", encoding="utf-8") as f:
-            json.dump(self.tracked_feeds, f, indent=2)
+            data = {
+                "feeds": self.tracked_feeds,
+                "contributors": self.contributor_stats
+            }
+            json.dump(data, f, indent=2)
+
+    def update_contributor_stats(self, author: str, additions: int, deletions: int, repo: str = None):
+        # update contributor statistics with lines changed.
+        if author not in self.contributor_stats:
+            self.contributor_stats[author] = {
+                "total_additions": 0,
+                "total_deletions": 0,
+                "total_changes": 0,
+                "pr_count": 0,
+                "repos": {}
+            }
+        
+        # update overall stats
+        self.contributor_stats[author]["total_additions"] += additions
+        self.contributor_stats[author]["total_deletions"] += deletions
+        self.contributor_stats[author]["total_changes"] += (additions + deletions)
+        self.contributor_stats[author]["pr_count"] += 1
+        
+        # update per-repo stats if repo is provided
+        if repo:
+            if repo not in self.contributor_stats[author]["repos"]:
+                self.contributor_stats[author]["repos"][repo] = {
+                    "additions": 0,
+                    "deletions": 0,
+                    "changes": 0,
+                    "pr_count": 0
+                }
+            self.contributor_stats[author]["repos"][repo]["additions"] += additions
+            self.contributor_stats[author]["repos"][repo]["deletions"] += deletions
+            self.contributor_stats[author]["repos"][repo]["changes"] += (additions + deletions)
+            self.contributor_stats[author]["repos"][repo]["pr_count"] += 1
+        
+        self.save_tracked_feeds()
 
     def parse_atom_entries(self, xml_text: str) -> list:
         """Return list of entries as dicts with keys id,title,link,updated,author"""
@@ -451,6 +507,66 @@ class AutoPRReviewCog(commands.Cog):
             lines.append(f"{key} → {ch_text}")
         await ctx.send("Tracked feeds:\n" + "\n - ".join(lines))
 
+    @commands.command(name="contributorstats", aliases=["stats", "contributors"])
+    async def contributorstats(self, ctx: commands.Context, contributor: str = None):
+        # Display stats for contributors showing lines changed.
+        # If no username is provided, shows stats for all contributors.
+        if not self.contributor_stats:
+            await ctx.send("No contributor statistics available yet.")
+            return
+        
+        if contributor:
+            # show stats for specific contributor
+            if contributor not in self.contributor_stats:
+                await ctx.send(f"No statistics found for contributor `{contributor}`.")
+                return
+            
+            stats = self.contributor_stats[contributor]
+            repo_lines = []
+            for repo, repo_stats in stats["repos"].items():
+                repo_lines.append(
+                    f"  • `{repo}`: {repo_stats['changes']:,} lines "
+                    f"(+{repo_stats['additions']:,} / -{repo_stats['deletions']:,}), "
+                    f"{repo_stats['pr_count']} PR{'s' if repo_stats['pr_count'] != 1 else ''}"
+                )
+            
+            repo_breakdown = "\n".join(repo_lines) if repo_lines else "  No repository data"
+            
+            await ctx.send(
+                f"**Contributor Statistics for `{contributor}`**\n\n"
+                f"**Total Lines Changed:** {stats['total_changes']:,}\n"
+                f"**Lines Added:** +{stats['total_additions']:,}\n"
+                f"**Lines Deleted:** -{stats['total_deletions']:,}\n"
+                f"**Pull Requests:** {stats['pr_count']}\n\n"
+                f"**Per Repository:**\n{repo_breakdown}"
+            )
+        else:
+            # show stats for all contributors (sorted by total changes)
+            sorted_contributors = sorted(
+                self.contributor_stats.items(),
+                key=lambda x: x[1]["total_changes"],
+                reverse=True
+            )
+            
+            lines = []
+            for username, stats in sorted_contributors[:10]:
+                lines.append(
+                    f"**{username}**: {stats['total_changes']:,} lines changed "
+                    f"(+{stats['total_additions']:,} / -{stats['total_deletions']:,}), "
+                    f"{stats['pr_count']} PR{'s' if stats['pr_count'] != 1 else ''}"
+                )
+            
+            total_contributors = len(self.contributor_stats)
+            footer = ""
+            if total_contributors > 10:
+                footer = f"\n\n*Showing top 10 of {total_contributors} contributors. Use `!contributorstats <username>` for individual stats.*"
+            
+            await ctx.send(
+                f"**Contributor Statistics**\n\n"
+                + "\n".join(lines)
+                + footer
+            )
+
     @tasks.loop(minutes=1)
     async def poll_atom_feeds(self):
         if not self.tracked_feeds:
@@ -493,13 +609,12 @@ class AutoPRReviewCog(commands.Cog):
                         f"**Author:** {e.get('author', '')}\n"
                         f"**Message:** {e.get('title', '')}\n"
                         f"[Link to commit]({e.get('link', '')})"
-                        # ? Maybe include timestamp of commit
                     )
 
                     # analyze commit information with deepseek
                     deepseek_response = self.analyze_diff(e.get('link', ''))
 
-                    # Handle case where DEEPSEEK_API_KEY is not set
+                    # handle case where DEEPSEEK_API_KEY is not set
                     if isinstance(deepseek_response, int):  # -1 returned when API key missing
                         deepseek_response = "⚠️ AI analysis unavailable (DEEPSEEK_API_KEY not configured)"
                     else:
