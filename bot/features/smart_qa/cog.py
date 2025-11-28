@@ -171,7 +171,7 @@ class SmartQACog(commands.Cog):
         if not question or not question.strip():
             await ctx.send("Error:Please provide a question! Usage: `!test_collections <your question>`")
             return
-
+            
         # Defaults for how many collections to ask the AI for vs display
         match_limit = 3
         result_limit = 1
@@ -236,7 +236,48 @@ class SmartQACog(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error while calling _fetch_collections: {str(e)}")
             logger.exception("Error in test_fetch_collections command")
-    
+
+    @commands.command(name="test_get_document")
+    async def test_get_document(self, ctx: commands.Context, *, document_path: Optional[str] = None):
+        """Test command for _find_document_by_path function."""
+        # Document path is mandatory, notify user if missing
+        if not document_path or not document_path.strip():
+            await ctx.send("❌ Please provide a document path! Usage: `!test_get_document <parent - sub - document>`")
+            return
+        
+        await ctx.send(f"🔍 Testing document retrieval for: `{document_path}`\nPlease wait...")
+        
+        try:
+            # Parse the document path
+            path_tuple = self._parse_document_path(document_path)
+            parent, subparents, doc_name = path_tuple
+            
+            if not parent or not doc_name:
+                await ctx.send(f"❌ Invalid document path format. Expected: `parent - sub - document` or `parent - document`")
+                return
+            
+            # Call the function to get document content
+            content = await self._find_document_by_path(path_tuple)
+            
+            if content:
+                # Send document content as text file attachment
+                from io import BytesIO
+                
+                response = f"✅ **Document found!**\n**Path:** `{document_path}`\n**Content length:** {len(content)} characters\n\nSending as file attachment..."
+                await ctx.send(response)
+                
+                # Create and send file
+                file = discord.File(
+                    BytesIO(content.encode('utf-8')),
+                    filename=f"{doc_name.replace(' ', '_')}.txt"
+                )
+                await ctx.send(file=file)
+            else:
+                await ctx.send(f"❌ Document not found or has no content.\n**Path:** `{document_path}`")
+                
+        except Exception as e:
+            await ctx.send(f"❌ Error: {str(e)}")
+            logger.exception("Error in test_get_document command")
 
     async def _fetch_collections(self):
         """Fetch all collections."""
@@ -246,7 +287,7 @@ class SmartQACog(commands.Cog):
                 res = await resp.json()
                 return res.get("data", [])
 
-    # Select most relevant collection for a question.
+    # Select most relevant collection for a question based on collection names.
     async def _select_collection(self, question: str, match_limit: int = 3, result_limit: int = 1) -> List[str]:
         """
         Uses AI to determine which collections are most likely to contain information helpful for the question.
@@ -255,7 +296,7 @@ class SmartQACog(commands.Cog):
         Args:
             question: The question to find relevant information for
             match_limit: Maximum number of collection names to request from the AI (>=1)
-            result_limit: Number of collection names to return (<= match_limit, >=1)
+            result_limit: Number of collection names to return to the user (<= match_limit, >=1)
         
         Returns:
             List of the most relevant collection names (ordered by relevance), or empty list if AI call fails
@@ -352,7 +393,6 @@ class SmartQACog(commands.Cog):
                         
                         # Validate that all returned collections exist in the original collection list
                         valid_collections = []
-                        
                         for collection_name in matched_collections:
                             # Find matching collection (case-insensitive)
                             for original_collection in collection_names:
@@ -408,7 +448,7 @@ class SmartQACog(commands.Cog):
             async with session.post(f"{self.api_url}/documents.list", headers=headers, json=data) as resp:
                 res = await resp.json()
                 return res.get("data", [])
-
+    
     def _get_full_path(self, doc, by_id):
         """Gets full path of document, separated by '/'"""
         parts = [doc.get("title")] # get title of each document and store in array `parts`
@@ -425,6 +465,113 @@ class SmartQACog(commands.Cog):
                         # around since we found it recursively)
 
         return "/".join(parts) # join titles with '/', then return it
+
+    # Returns: the path of the document as a tuple. The last element is the document name.
+    def _parse_document_path(self, full_name: str) -> tuple[str, list[str], str]:
+        """
+        Parses document name format with variable depth:
+        "parent - sub1 - sub2 - sub3 - ... - document"
+        "parent - document"
+        
+        Returns: (parent_collection, [sub_collections...], document_name)
+        """
+        parts = [part.strip() for part in full_name.split(" - ")]
+
+        # parent - document
+        if len(parts) == 2:
+            return parts[0], [], parts[1]
+        
+        # parent - sub1 - sub2 - ... - document
+        else:
+            return parts[0], parts[1:-1], parts[-1]
+
+    async def _find_document_by_path(self, path: tuple[str, list[str], str]) -> Optional[str]:
+        """
+        Find a document by matching its title in the specified collection and return its content.
+        
+        Args:
+            path: Tuple of (parent_collection_name, [sub_collections...], document_name)
+        
+        Returns:
+            Document content as string, or None if not found
+        """
+        parent_name = path[0]
+        doc_name = path[-1]
+
+        # Step 1: Find the parent collection (case-insensitive)
+        collections = await self._fetch_collections()
+        parent_collection = None
+        parent_name_lower = parent_name.strip().lower()
+        for collection in collections:
+            if collection.get("name", "").strip().lower() == parent_name_lower:
+                parent_collection = collection
+                break
+
+        if not parent_collection:
+            logger.warning(f"Collection '{parent_name}' not found")
+            return None
+
+        collection_id = parent_collection.get("id")
+
+        # Step 2: Fetch all documents in the collection
+        docs = await self._fetch_documents(collection_id)
+        if not docs:
+            logger.warning(f"No documents found in collection '{parent_name}'")
+            return None
+
+        # Step 3: Match the document by title (case-insensitive)
+        target_doc = None
+        doc_name_lower = doc_name.strip().lower()
+        for doc in docs:
+            if doc.get('title', '').strip().lower() == doc_name_lower:
+                target_doc = doc
+                break
+
+        if not target_doc:
+            # Log available document titles for debugging
+            available_titles = [doc.get('title', 'Untitled') for doc in docs[:10]]
+            logger.warning(
+                f"Document '{doc_name}' not found in collection '{parent_name}'. "
+                f"Available documents (first 10): {available_titles}"
+            )
+            return None
+
+        # Step 4: Fetch document content
+        document_id = target_doc["id"]
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        data = {"id": document_id}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{self.api_url}/documents.info", headers=headers, json=data) as resp:
+                    if resp.status == 200:
+                        res = await resp.json()
+                        doc_data = res.get("data", {})
+
+                        # Try different possible content fields
+                        content = (
+                            doc_data.get("text") or
+                            doc_data.get("content") or
+                            doc_data.get("body") or
+                            doc_data.get("markdown") or
+                            ""
+                        )
+
+                        if content:
+                            logger.info(f"Successfully fetched document '{doc_name}' from collection '{parent_name}' ({len(content)} chars)")
+                            return content
+                        else:
+                            logger.warning(f"Document '{doc_name}' found but has no content. Available fields: {list(doc_data.keys())}")
+                            return None
+                    else:
+                        error_text = await resp.text()
+                        logger.warning(f"Failed to fetch document content: HTTP {resp.status} - {error_text}")
+                        return None
+
+        except Exception as e:
+            logger.exception(f"Error fetching document content: {e}")
+            return None
+
 
 
 async def setup(bot: commands.Bot):
