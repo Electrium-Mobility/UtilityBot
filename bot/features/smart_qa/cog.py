@@ -1,17 +1,15 @@
 from discord.ext import commands
 import discord
-import random
-from typing import List, Tuple, Optional
+from typing import List, Optional
 import logging
 import os
 import aiohttp
-
-# Chroma could be implemented to support semantic search on large files if needed
-#_DISABLE_CHROMA = os.getenv("DISABLE_CHROMA", "").lower() in {"1","true","yes","on"}
+import json
 
 logger = logging.getLogger("utilitybot.smart_qa")
 
-def _get_knowledge_document() -> str:
+# Only for testing purposes. Actual document is fetched from Outline API.
+def _get_mock_knowledge_document() -> str:
     '''Mock knowledge base. Will be replaced by an actual document in the future.'''
     return (
         "Electrium Mobility is a student design team based at the University of Waterloo. Its goal is to create sustainable and affordable transportation in the form of Personal Electric Vehicles."
@@ -79,8 +77,7 @@ async def _ask_deepseek(question: str, knowledge_document: str) -> Optional[str]
     except Exception:
         logger.exception("DeepSeek API call failed")
         return None
-import aiohttp
-import os
+
 
 class SmartQACog(commands.Cog):
     """Smart Q&A feature implementation."""
@@ -95,44 +92,6 @@ class SmartQACog(commands.Cog):
     async def qa(self, ctx: commands.Context, *, question: str):
         """Placeholder command: accept a question and return a placeholder response."""
         await ctx.send(f"Received question: {question}\n(Placeholder response, to be implemented)")
-
-    async def _fetch_collections(self):
-        """Fetch all collections."""
-        headers = {"Authorization": f"Bearer {self.api_token}"}
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{self.api_url}/collections.list", headers=headers) as resp:
-                res = await resp.json()
-                return res.get("data", [])
-
-    async def _fetch_documents(self, collection_id):
-        """Fetch all documents in a collection (recursively)."""
-        headers = {"Authorization": f"Bearer {self.api_token}"}
-        data = {"collectionId": collection_id}
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{self.api_url}/documents.list", headers=headers, json=data) as resp:
-                res = await resp.json()
-                return res.get("data", [])
-
-
-
-
-    def _get_full_path(self, doc, by_id):
-        """Gets full path of document, separated by '/'"""
-        parts = [doc.get("title")] # get title of each document and store in array `parts`
-        parent_id = doc.get("parentDocumentId") # get parent id of each document
-        
-        while parent_id: # while we havent reached root
-            parent = by_id.get(parent_id) # find curr document's parent using id 
-                                          # (pass parent_id as key in by_id)
-            parts.append(parent["title"]) # add title of parent to path
-            parent_id = parent.get("parentDocumentId") # set new parent id as the parent_id 
-                                                       # of curr document
-
-        parts.reverse() # reverse titles (path is from root to document, but its the other way
-                        # around since we found it recursively)
-
-        return "/".join(parts) # join titles with '/', then return it
 
     @commands.command(name="docs")
     async def get_bottom_docs(self, ctx):
@@ -198,6 +157,274 @@ class SmartQACog(commands.Cog):
             response += f"- {self._get_full_path(doc, by_id)}\n"
 
         await ctx.send(response) # print full path of all documents 
+
+    # Bot command to test _select_collection() returns data.
+    @commands.command(name="test_select_collections")
+    async def test_select_collections(
+        self,
+        ctx: commands.Context,
+        *,
+        question: Optional[str] = None,
+    ):
+        """Test command for _select_collection function."""
+        # Question is mandatory, notify user if missing
+        if not question or not question.strip():
+            await ctx.send("Error:Please provide a question! Usage: `!test_collections <your question>`")
+            return
+
+        # Defaults for how many collections to ask the AI for vs display
+        match_limit = 3
+        result_limit = 1
+        
+        await ctx.send(
+            f"Testing collection selection for: {question}\n"
+            f"(match limit: {match_limit}, displaying top {result_limit})\nPlease wait..."
+        )
+        
+        try:
+            selected = await self._select_collection(question, match_limit=match_limit, result_limit=result_limit)
+            
+            if selected:
+                response = ["✅ Top collection results:"]
+                for i, col in enumerate(selected, 1):
+                    response.append(f"{i}. {col}")
+                if match_limit > result_limit:
+                    response.append(f"(Requested top {result_limit} of {match_limit} max match selections)")
+                response = "\n".join(response)
+            else:
+                response = "❌ No collections selected (empty list returned)"
+                
+            await ctx.send(response)
+        except Exception as e:
+            await ctx.send(f"Error: {str(e)}")
+            logger.exception("Error in test_collections command")
+
+    # Bot command to test _fetch_collections() returns data.
+    @commands.command(name="test_fetch_collections")
+    async def test_fetch_collections(self, ctx: commands.Context):
+        """Test command to verify _fetch_collections() returns data."""
+        await ctx.send("Testing Outline collections API connection... Please wait...")
+
+        if not self.api_url:
+            await ctx.send("❌ OUTLINE_API_URL is not set in the environment variables.")
+            return
+
+        if not self.api_token:
+            await ctx.send("❌ OUTLINE_API_KEY is not set in the environment variables.")
+            return
+
+        try:
+            collections = await self._fetch_collections()
+
+            if not collections:
+                await ctx.send("❌ _fetch_collections returned no data (empty list).")
+                return
+
+            response = [f"✅ _fetch_collections succeeded! Found {len(collections)} collection(s)."]
+            response.append("Here are the first few:")
+
+            for collection in collections[:5]:
+                name = collection.get("name", "Unnamed collection")
+                coll_id = collection.get("id", "N/A")
+                response.append(f"- **{name}** (ID: `{coll_id}`)")
+
+            if len(collections) > 5:
+                response.append(f"...and {len(collections) - 5} more.")
+
+            await ctx.send("\n".join(response))
+
+        except Exception as e:
+            await ctx.send(f"❌ Error while calling _fetch_collections: {str(e)}")
+            logger.exception("Error in test_fetch_collections command")
+    
+
+    async def _fetch_collections(self):
+        """Fetch all collections."""
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{self.api_url}/collections.list", headers=headers) as resp:
+                res = await resp.json()
+                return res.get("data", [])
+
+    # Select most relevant collection for a question.
+    async def _select_collection(self, question: str, match_limit: int = 3, result_limit: int = 1) -> List[str]:
+        """
+        Uses AI to determine which collections are most likely to contain information helpful for the question.
+        Fetches all collections using _fetch_collections() and then uses AI to select the most relevant ones.
+        
+        Args:
+            question: The question to find relevant information for
+            match_limit: Maximum number of collection names to request from the AI (>=1)
+            result_limit: Number of collection names to return (<= match_limit, >=1)
+        
+        Returns:
+            List of the most relevant collection names (ordered by relevance), or empty list if AI call fails
+        """
+        match_limit = max(1, match_limit)
+        result_limit = max(1, min(result_limit, match_limit))
+        
+        # Fetch all collections using _fetch_collections()
+        collections = await self._fetch_collections()
+        if not collections:
+            logger.warning("No collections found")
+            return []
+        
+        # Extract collection names from collection objects
+        collection_names = [collection.get("name") for collection in collections if collection.get("name")]
+        
+        if not collection_names:
+            logger.warning("No collection names found in collections data")
+            return []
+        
+        if len(collection_names) == 1:
+            return collection_names
+        
+        api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        if not api_key:
+            logger.warning("DEEPSEEK_API_KEY not set, cannot select relevant collections")
+            return []
+        
+        # Format collection list for AI
+        collection_list = "\n".join(f"{i+1}. {name}" for i, name in enumerate(collection_names))
+        
+        # DeepSeek API call.
+        # Return JSON object with 'collections' key containing array of collection names
+        # in order of relevance (most relevant first), up to match_limit.
+        # Return empty list if AI call fails.
+        url = "https://api.deepseek.com/v1/chat/completions"
+        payload = {
+            "model": "deepseek-chat",
+            "temperature": 0.3,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a helpful assistant that selects the most relevant collections for a question. "
+                        f"You must respond with valid JSON only. Your response must be a JSON object with a 'collections' key "
+                        f"containing an array of up to {match_limit} collection names in order of relevance (most relevant first)."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question: {question}\n\n"
+                        f"Available collections:\n{collection_list}\n\n"
+                        "Which collections are most likely to contain information helpful for answering this question? "
+                        f"Respond with at most {match_limit} collection names in a JSON object in this exact format:\n"
+                        '{"collections": ["Collection Name 1", "Collection Name 2", "..."]}\n\n'
+                        "Use the exact collection names as they appear in the list above."
+                    ),
+                },
+            ],
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.warning("DeepSeek API non-200 when selecting collections: %s", resp.status)
+                        return []
+                    
+                    data = await resp.json()
+                    choices = (data or {}).get("choices") or []
+                    if not choices:
+                        return []
+                    
+                    content = (((choices[0] or {}).get("message") or {}).get("content") or "").strip()
+                    
+                    if not content:
+                        return []
+                    
+                    # Parse JSON response
+                    try:
+                        response_data = json.loads(content)
+                        matched_collections = response_data.get("collections", [])
+                        
+                        if not matched_collections:
+                            logger.warning("AI returned empty collections array in JSON response")
+                            return []
+                        
+                        # Validate that all returned collections exist in the original collection list
+                        valid_collections = []
+                        
+                        for collection_name in matched_collections:
+                            # Find matching collection (case-insensitive)
+                            for original_collection in collection_names:
+                                if original_collection.lower() == collection_name.lower():
+                                    if original_collection not in valid_collections:  # Avoid duplicates
+                                        valid_collections.append(original_collection)
+                                    break
+                        
+                        if not valid_collections:
+                            logger.warning("None of the AI-selected collections matched the original collection list. AI response: %s", content)
+                            return []
+                        
+                        # Limit to requested number of collections (if more were returned)
+                        top_collections = valid_collections[:result_limit]
+                        logger.info(
+                            "Selected %d collection(s) for question '%s': %s",
+                            len(top_collections),
+                            question,
+                            top_collections,
+                        )
+                        return top_collections
+                        
+                    except json.JSONDecodeError as e:
+                        logger.warning("Failed to parse AI response as JSON: %s. Response: %s", e, content)
+                        # Fallback: try to extract collection names from text if JSON parsing fails
+                        matched_collections = []
+                        for collection_name in collection_names:
+                            if collection_name.lower() in content.lower():
+                                matched_collections.append(collection_name)
+                        
+                        if matched_collections:
+                            top_collections = matched_collections[:result_limit]
+                            logger.info(
+                                "Fallback: Selected %d collection(s) using text matching: %s",
+                                len(top_collections),
+                                top_collections,
+                            )
+                            return top_collections
+                        else:
+                            logger.warning("Could not extract collections from AI response, using first collection as fallback")
+                            return [collection_names[0]]
+                    
+        except Exception as e:
+            logger.exception("Error selecting relevant collections: %s", e)
+            return []
+
+    async def _fetch_documents(self, collection_id):
+        """Fetch all documents in a collection (recursively)."""
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        data = {"collectionId": collection_id}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{self.api_url}/documents.list", headers=headers, json=data) as resp:
+                res = await resp.json()
+                return res.get("data", [])
+
+    def _get_full_path(self, doc, by_id):
+        """Gets full path of document, separated by '/'"""
+        parts = [doc.get("title")] # get title of each document and store in array `parts`
+        parent_id = doc.get("parentDocumentId") # get parent id of each document
+        
+        while parent_id: # while we havent reached root
+            parent = by_id.get(parent_id) # find curr document's parent using id 
+                                          # (pass parent_id as key in by_id)
+            parts.append(parent["title"]) # add title of parent to path
+            parent_id = parent.get("parentDocumentId") # set new parent id as the parent_id 
+                                                       # of curr document
+
+        parts.reverse() # reverse titles (path is from root to document, but its the other way
+                        # around since we found it recursively)
+
+        return "/".join(parts) # join titles with '/', then return it
 
 
 async def setup(bot: commands.Bot):
