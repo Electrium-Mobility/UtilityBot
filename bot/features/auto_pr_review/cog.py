@@ -354,9 +354,10 @@ class AutoPRReviewCog(commands.Cog):
             except Exception:
                 self.tracked_feeds = {}
                 self.contributor_stats = {}
-        else:
-            self.tracked_feeds = {}
-            self.contributor_stats = {}
+                self.contributor_stats = {}
+            else:
+                self.tracked_feeds = {}
+                self.contributor_stats = {}
 
     def save_tracked_feeds(self):
         with open(STORAGE_PATH, "w", encoding="utf-8") as f:
