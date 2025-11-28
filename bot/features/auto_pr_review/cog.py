@@ -342,13 +342,18 @@ class AutoPRReviewCog(commands.Cog):
                     data = json.load(f)
                     # backward compatibility
                     if isinstance(data, dict):
-                        self.tracked_feeds = data.get("feeds", data)
-                        self.contributor_stats = data.get("contributors", {})
+                        if "feeds" in data:
+                            self.tracked_feeds = data["feeds"]
+                            self.contributor_stats = data.get("contributors", {})
+                        else:
+                            self.tracked_feeds = data
+                            self.contributor_stats = {}
                     else:
                         self.tracked_feeds = {}
                         self.contributor_stats = {}
             except Exception:
                 self.tracked_feeds = {}
+                self.contributor_stats = {}
         else:
             self.tracked_feeds = {}
             self.contributor_stats = {}
