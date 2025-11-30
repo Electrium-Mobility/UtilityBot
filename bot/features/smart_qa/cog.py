@@ -257,6 +257,15 @@ class SmartQACog(commands.Cog):
                 await ctx.send(f"❌ Invalid document path format. Expected: `parent - sub - document` or `parent - document`")
                 return
             
+            # Validate API configuration before making API calls
+            if not self.api_url:
+                await ctx.send("❌ OUTLINE_API_URL is not set in the environment variables.")
+                return
+
+            if not self.api_token:
+                await ctx.send("❌ OUTLINE_API_KEY is not set in the environment variables.")
+                return
+            
             # Call the function to get document content
             content = await self._find_document_by_path(path_tuple)
             
