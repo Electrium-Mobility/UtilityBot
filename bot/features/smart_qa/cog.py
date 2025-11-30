@@ -504,6 +504,7 @@ class SmartQACog(commands.Cog):
         while parent_id:
             parent_doc = by_id.get(parent_id)
             if not parent_doc:
+                logger.debug(f"Parent document ID '{parent_id}' not found in collection - possible data inconsistency")
                 break
             actual_path.append(parent_doc.get("title", "").strip())
             parent_id = parent_doc.get("parentDocumentId")
@@ -529,7 +530,9 @@ class SmartQACog(commands.Cog):
             path: Tuple of (parent_collection_name, [sub_collections...], document_name)
         
         Returns:
-            Document content as string, or None if not found
+            Document content as string, or None if not found.
+            Note: If multiple documents match the path (unlikely in well-structured collections),
+            only the first matching document's content is returned.
         """
         parent_name = path[0]
         subparents = path[1]
