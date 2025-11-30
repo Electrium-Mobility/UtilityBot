@@ -485,9 +485,45 @@ class SmartQACog(commands.Cog):
         else:
             return parts[0], parts[1:-1], parts[-1]
 
+    def _verify_document_path(self, doc: dict, subparents: list[str], by_id: dict) -> bool:
+        """
+        Verify that a document's hierarchical path matches the expected subparents.
+        
+        Args:
+            doc: The document to verify
+            subparents: List of expected parent document names in order (closest to root first)
+            by_id: Dictionary mapping document IDs to document objects
+        
+        Returns:
+            True if the document's path matches the expected subparents, False otherwise
+        """
+        # Build the document's actual parent path by traversing parentDocumentId
+        actual_path = []
+        parent_id = doc.get("parentDocumentId")
+        
+        while parent_id:
+            parent_doc = by_id.get(parent_id)
+            if not parent_doc:
+                break
+            actual_path.append(parent_doc.get("title", "").strip())
+            parent_id = parent_doc.get("parentDocumentId")
+        
+        # Reverse to get root-to-document order (actual_path is built from doc to root)
+        actual_path.reverse()
+        
+        # Compare expected subparents with actual path (case-insensitive)
+        if len(subparents) != len(actual_path):
+            return False
+        
+        for expected, actual in zip(subparents, actual_path):
+            if expected.strip().lower() != actual.lower():
+                return False
+        
+        return True
+
     async def _find_document_by_path(self, path: tuple[str, list[str], str]) -> Optional[str]:
         """
-        Find a document by matching its title in the specified collection and return its content.
+        Find a document by matching its title and hierarchical path in the specified collection.
         
         Args:
             path: Tuple of (parent_collection_name, [sub_collections...], document_name)
@@ -496,7 +532,8 @@ class SmartQACog(commands.Cog):
             Document content as string, or None if not found
         """
         parent_name = path[0]
-        doc_name = path[-1]
+        subparents = path[1]
+        doc_name = path[2]
 
         # Step 1: Find the parent collection (case-insensitive)
         collections = await self._fetch_collections()
@@ -519,19 +556,25 @@ class SmartQACog(commands.Cog):
             logger.warning(f"No documents found in collection '{parent_name}'")
             return None
 
-        # Step 3: Match the document by title (case-insensitive)
+        # Build a dictionary to look up documents by ID for path verification
+        by_id = {doc["id"]: doc for doc in docs}
+
+        # Step 3: Match the document by title and verify hierarchical path
         target_doc = None
         doc_name_lower = doc_name.strip().lower()
+        
         for doc in docs:
             if doc.get('title', '').strip().lower() == doc_name_lower:
-                target_doc = doc
-                break
+                # Verify the document's hierarchical path matches the subparents
+                if self._verify_document_path(doc, subparents, by_id):
+                    target_doc = doc
+                    break
 
         if not target_doc:
             # Log available document titles for debugging
             available_titles = [doc.get('title', 'Untitled') for doc in docs[:10]]
             logger.warning(
-                f"Document '{doc_name}' not found in collection '{parent_name}'. "
+                f"Document '{doc_name}' not found in collection '{parent_name}' with path {subparents}. "
                 f"Available documents (first 10): {available_titles}"
             )
             return None
