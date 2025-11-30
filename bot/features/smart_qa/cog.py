@@ -475,16 +475,20 @@ class SmartQACog(commands.Cog):
         
         Returns: (parent_collection, [sub_collections...], document_name)
         """
+        if not full_name or not full_name.strip():
+            return "", [], ""
         parts = [part.strip() for part in full_name.split(" - ")]
-
+        # Check for empty parts (invalid path)
+        if any(not part for part in parts):
+            return "", [], ""
         # parent - document
         if len(parts) == 2:
             return parts[0], [], parts[1]
-        
         # parent - sub1 - sub2 - ... - document
-        else:
+        elif len(parts) > 2:
             return parts[0], parts[1:-1], parts[-1]
-
+        else:
+            return "", [], ""
     async def _find_document_by_path(self, path: tuple[str, list[str], str]) -> Optional[str]:
         """
         Find a document by matching its title in the specified collection and return its content.
