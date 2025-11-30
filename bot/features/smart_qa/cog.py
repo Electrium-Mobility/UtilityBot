@@ -1,5 +1,6 @@
 from discord.ext import commands
 import discord
+from io import BytesIO
 from typing import List, Optional
 import logging
 import os
@@ -261,8 +262,6 @@ class SmartQACog(commands.Cog):
             
             if content:
                 # Send document content as text file attachment
-                from io import BytesIO
-                
                 response = f"✅ **Document found!**\n**Path:** `{document_path}`\n**Content length:** {len(content)} characters\n\nSending as file attachment..."
                 await ctx.send(response)
                 
@@ -475,15 +474,20 @@ class SmartQACog(commands.Cog):
         
         Returns: (parent_collection, [sub_collections...], document_name)
         """
+        if not full_name or not full_name.strip():
+            return "", [], ""
         parts = [part.strip() for part in full_name.split(" - ")]
-
+        # Check for empty parts (invalid path)
+        if any(not part for part in parts):
+            return "", [], ""
         # parent - document
         if len(parts) == 2:
             return parts[0], [], parts[1]
-        
         # parent - sub1 - sub2 - ... - document
-        else:
+        elif len(parts) > 2:
             return parts[0], parts[1:-1], parts[-1]
+        else:
+            return "", [], ""
 
     def _verify_document_path(self, doc: dict, subparents: list[str], by_id: dict) -> bool:
         """
@@ -522,6 +526,7 @@ class SmartQACog(commands.Cog):
         
         return True
 
+        
     async def _find_document_by_path(self, path: tuple[str, list[str], str]) -> Optional[str]:
         """
         Find a document by matching its title and hierarchical path in the specified collection.
