@@ -1,5 +1,6 @@
 from discord.ext import commands
 import discord
+from io import BytesIO
 from typing import List, Optional
 import logging
 import os
@@ -261,8 +262,6 @@ class SmartQACog(commands.Cog):
             
             if content:
                 # Send document content as text file attachment
-                from io import BytesIO
-                
                 response = f"✅ **Document found!**\n**Path:** `{document_path}`\n**Content length:** {len(content)} characters\n\nSending as file attachment..."
                 await ctx.send(response)
                 
