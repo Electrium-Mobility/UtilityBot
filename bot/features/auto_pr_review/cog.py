@@ -1,8 +1,8 @@
 from urllib import request
 from discord.ext import tasks, commands
 import aiohttp
+import aiofiles
 import xml.etree.ElementTree as ET
-import json
 import re
 import os
 import json
@@ -78,9 +78,11 @@ class AutoPRReviewCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.tracked_feeds = {}
-        self.load_tracked_feeds()
-        self.poll_atom_feeds.start()
 
+
+    async def cog_load(self):
+        await self.load_tracked_feeds()
+        self.poll_atom_feeds.start()
 
     # method that returns files to ignore when putting it into ai
     async def ignore_files(self, repo):
@@ -320,7 +322,7 @@ class AutoPRReviewCog(commands.Cog):
             author = responseJson['user']['login']
             additions = responseJson['additions']
             deletions = responseJson['deletions']
-            self.update_contributor_stats(author, additions, deletions, project)
+            await self.update_contributor_stats(author, additions, deletions, project)
 
             await ctx.send(
                 f"✅ **Pull Request Received!**\n\n"
@@ -335,39 +337,37 @@ class AutoPRReviewCog(commands.Cog):
                 f"🔗 **Link:** {responseJson['html_url']}"
             )
 
-    def load_tracked_feeds(self):
+    async def load_tracked_feeds(self):
+        # load tracked feeds from storage.
         if os.path.exists(STORAGE_PATH):
             try:
-                with open(STORAGE_PATH, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                async with aiofiles.open(STORAGE_PATH, "r", encoding="utf-8") as f:
+                    content = await f.read()
+                    data = json.loads(content)
                     # backward compatibility
                     if isinstance(data, dict):
-                        if "feeds" in data:
-                            self.tracked_feeds = data["feeds"]
-                            self.contributor_stats = data.get("contributors", {})
-                        else:
-                            self.tracked_feeds = data
-                            self.contributor_stats = {}
+                        self.tracked_feeds = data.get("feeds", data)
+                        self.contributor_stats = data.get("contributors", {})
                     else:
                         self.tracked_feeds = {}
                         self.contributor_stats = {}
             except Exception:
                 self.tracked_feeds = {}
                 self.contributor_stats = {}
-                self.contributor_stats = {}
-            else:
-                self.tracked_feeds = {}
-                self.contributor_stats = {}
+        else:
+            self.tracked_feeds = {}
+            self.contributor_stats = {}
 
-    def save_tracked_feeds(self):
-        with open(STORAGE_PATH, "w", encoding="utf-8") as f:
-            data = {
-                "feeds": self.tracked_feeds,
-                "contributors": self.contributor_stats
-            }
-            json.dump(data, f, indent=2)
+    async def save_tracked_feeds(self):
+        # save tracked feeds to storage.
+        data = {
+            "feeds": self.tracked_feeds,
+            "contributors": self.contributor_stats
+        }
+        async with aiofiles.open(STORAGE_PATH, "w", encoding="utf-8") as f:
+            await f.write(json.dumps(data, indent=2))
 
-    def update_contributor_stats(self, author: str, additions: int, deletions: int, repo: str = None):
+    async def update_contributor_stats(self, author: str, additions: int, deletions: int, repo: str = None):
         # update contributor statistics with lines changed.
         if author not in self.contributor_stats:
             self.contributor_stats[author] = {
@@ -398,7 +398,7 @@ class AutoPRReviewCog(commands.Cog):
             self.contributor_stats[author]["repos"][repo]["changes"] += (additions + deletions)
             self.contributor_stats[author]["repos"][repo]["pr_count"] += 1
         
-        self.save_tracked_feeds()
+        await self.save_tracked_feeds()
 
     def parse_atom_entries(self, xml_text: str) -> list:
         """Return list of entries as dicts with keys id,title,link,updated,author"""
