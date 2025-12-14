@@ -335,7 +335,7 @@ class AutoPRReviewCog(commands.Cog):
             )
 
     async def load_tracked_feeds(self):
-        # load tracked feeds from storage 
+        # load tracked feeds from storage.
         if os.path.exists(STORAGE_PATH):
             try:
                 async with aiofiles.open(STORAGE_PATH, "r", encoding="utf-8") as f:
