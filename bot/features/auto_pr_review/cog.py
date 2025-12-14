@@ -359,7 +359,7 @@ class AutoPRReviewCog(commands.Cog):
             self.contributor_stats = {}
 
     async def save_tracked_feeds(self):
-        # save tracked feeds to storage 
+        # save tracked feeds to storage.
         data = {
             "feeds": self.tracked_feeds,
             "contributors": self.contributor_stats
