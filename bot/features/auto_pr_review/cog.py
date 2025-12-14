@@ -365,7 +365,7 @@ class AutoPRReviewCog(commands.Cog):
             await f.write(json.dumps(data, indent=2))
 
     async def update_contributor_stats(self, author: str, additions: int, deletions: int, repo: str = None):
-        # update contributor statistics with lines changed
+        # update contributor statistics with lines changed.
         if author not in self.contributor_stats:
             self.contributor_stats[author] = {
                 "total_additions": 0,
