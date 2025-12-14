@@ -78,7 +78,10 @@ class AutoPRReviewCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.tracked_feeds = {}
-        self.load_tracked_feeds()
+
+
+    async def cog_load(self):
+        await self.load_tracked_feeds()
         self.poll_atom_feeds.start()
 
     # method that returns files to ignore when putting it into ai
