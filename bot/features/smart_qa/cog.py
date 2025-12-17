@@ -711,6 +711,10 @@ class SmartQACog(commands.Cog):
 
         # Try up to 3 times (initial + 2 retries)
         for attempt in range(3):
+            if attempt == 0:
+                logger.warning("TEST: Simulating 429 error on first attempt")
+                await asyncio.sleep(0.5)
+                continue
             try:
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
                     # Using POST
