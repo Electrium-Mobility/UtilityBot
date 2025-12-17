@@ -6,6 +6,7 @@ import logging
 import os
 import aiohttp
 import json
+import asyncio
 
 logger = logging.getLogger("utilitybot.smart_qa")
 
@@ -80,7 +81,7 @@ async def _ask_deepseek(question: str, knowledge_document: str) -> Optional[str]
         return None
 
 
-class SmartQACog(commands.Cog):
+class SmartQACog(commands.Cog): 
     """Smart Q&A feature implementation."""
 
     def __init__(self, bot: commands.Bot):
@@ -100,6 +101,7 @@ class SmartQACog(commands.Cog):
 
         # Fetch collections
         collections = await self._fetch_collections() # get all collections
+        
         if not collections: # there are no collections
             return await ctx.send("No collections found.")
 
@@ -159,9 +161,8 @@ class SmartQACog(commands.Cog):
 
         await ctx.send(response) # print full path of all documents 
 
-    # Bot command to test _select_collection() returns data.
-    @commands.command(name="test_select_collections")
-    async def test_select_collections(
+    @commands.command(name="select_collections")
+    async def select_collections(
         self,
         ctx: commands.Context,
         *,
@@ -201,8 +202,8 @@ class SmartQACog(commands.Cog):
             logger.exception("Error in test_collections command")
 
     # Bot command to test _fetch_collections() returns data.
-    @commands.command(name="test_fetch_collections")
-    async def test_fetch_collections(self, ctx: commands.Context):
+    @commands.command(name="fetch_collections")
+    async def fetch_collections(self, ctx: commands.Context):
         """Test command to verify _fetch_collections() returns data."""
         await ctx.send("Testing Outline collections API connection... Please wait...")
 
@@ -238,9 +239,8 @@ class SmartQACog(commands.Cog):
             await ctx.send(f"❌ Error while calling _fetch_collections: {str(e)}")
             logger.exception("Error in test_fetch_collections command")
 
-    @commands.command(name="test_get_document")
-    async def test_get_document(self, ctx: commands.Context, *, document_path: Optional[str] = None):
-        """Test command for _find_document_by_path function."""
+    @commands.command(name="get_document")
+    async def get_document(self, ctx: commands.Context, *, document_path: Optional[str] = None):
         # Document path is mandatory, notify user if missing
         if not document_path or not document_path.strip():
             await ctx.send("❌ Please provide a document path! Usage: `!test_get_document <parent - sub - document>`")
@@ -286,6 +286,50 @@ class SmartQACog(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error: {str(e)}")
             logger.exception("Error in test_get_document command")
+
+    @commands.command(name="search_documents")
+    async def search_documents(self, ctx: commands.Context, *, query: str):
+        if not query or not query.strip():
+            await ctx.send("Please provide a search query! Usage: `!test_search <your search query>`")
+            return
+
+        await ctx.send(f"🔍 Searching for: `{query}`\nPlease wait...")
+
+        try:
+            results = await self._search_documents(query, limit=5)
+
+            if results:
+                resp = f"✅ **Found {len(results)} document(s):**\n\n"
+                for i, doc in enumerate(results, 1):
+                    # Mandatory fields
+                    resp += f"**{i}. {doc.get('title', 'Untitled')}**\n"
+                    resp += f"   ID: {doc.get('id', 'ID Not found')}\n"
+                    resp += f"   Collection ID: {doc.get('collectionId', 'Collection ID Not found')}\n"
+
+                    # If present
+                    if doc.get('url'):
+                        resp += f"   URL: {doc['url']}\n"
+                    # If present
+                    if doc.get('score') is not None:
+                        resp += f"   Score: {doc['score']}\n"
+                    # If present
+                    if doc.get('snippet'):
+                        resp += f"   Snippet: {doc['snippet'][:100]}...\n"
+                    # If present
+                    if doc.get('summary'):
+                        resp += f"   Summary: {doc['summary'][:100]}...\n"
+
+                    resp += "\n"
+
+                await ctx.send(resp)
+            else:
+                await ctx.send(f"❌ No documents found for query: `{query}`")
+
+        except Exception as e:
+            await ctx.send(f"❌ Error: {str(e)}")
+            logger.exception("Error in test_search command")
+            
+
 
     async def _fetch_collections(self):
         """Fetch all collections."""
@@ -535,7 +579,6 @@ class SmartQACog(commands.Cog):
         
         return True
 
-        
     async def _find_document_by_path(self, path: tuple[str, list[str], str]) -> Optional[str]:
         """
         Find a document by matching its title and hierarchical path in the specified collection.
@@ -631,6 +674,116 @@ class SmartQACog(commands.Cog):
         except Exception as e:
             logger.exception(f"Error fetching document content: {e}")
             return None
+
+    # Returns:  a list of dicts with: id, title, url (if present), collectionId, score (if present), snippet/summary (if present).
+    async def _search_documents(self, query, collection_id = None, limit = 5) -> list[dict]:
+        """
+        Search documents in Outline.
+
+        Args:
+            query: Search query string. 
+            collection_id: Optional collection ID to filter results.
+            limit: Maximum number of results to return.
+
+        Returns:
+            List of dicts with: id, title, url (if present), collectionId, score (if present), snippets/summaries (if present).
+        """
+
+        # Validate query
+        if not query or not query.strip():
+            return []
+
+        # Validate API configuration
+        if not self.api_url or not self.api_token:
+            logger.warning("Outline API URL or token not configured")
+            return []
+
+        # Set up headers and request body
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        data = {"query": query.strip(), "limit": limit}
+
+        # Add collection ID if provided
+        if collection_id:
+            data["collectionId"] = "collection_id"
+
+        # Retry logic: up to 2 retries with backoff.
+        backoff_delay = [0.5, 1.0]
+
+        # Try up to 3 times (initial + 2 retries)
+        for attempt in range(3):
+            if attempt == 0:
+                logger.warning("TEST: Simulating 429 error on first attempt")
+                await asyncio.sleep(0.5)
+                continue
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                    # Using POST
+                    async with session.post(f"{self.api_url}/documents.search", headers=headers, json=data) as resp:
+                        # Success case (200)
+                        if resp.status == 200:
+                            result = await resp.json()
+                            returned_data = result.get("data", [])
+
+                            # if returned_data:
+                            #     logger.warning("Search sample result: %s", json.dumps(returned_data[0], indent=2))
+
+                            # Format results to include required fields
+                            formatted_results = []
+                            for item in returned_data:
+                                doc = item.get("document", {})
+                                formatted_doc = {
+                                    # Mandatory fields
+                                    "id": doc.get("id", "ID Not found"),
+                                    "title": doc.get("title", "Untitled"),
+                                    "collectionId": doc.get("collectionId", "Collection ID Not found"),
+                                }
+
+                                # Add optional fields if present
+                                if doc.get("url"):
+                                    formatted_doc["url"] = "https://docs.electriummobility.com" + doc.get("url")
+                                if doc.get("score"):
+                                    formatted_doc["score"] = doc.get("score")
+                                if doc.get("snippet"):
+                                    formatted_doc["snippet"] = doc.get("snippet")
+                                elif doc.get("summary"):
+                                    formatted_doc["summary"] = doc.get("summary")
+
+                                formatted_results.append(formatted_doc)
+
+                            return formatted_results
+
+                        # Retry cases: 429 (rate limit) or 5xx (server errors)
+                        elif resp.status == 439 or (500 <= resp.status < 600):
+                            if attempt < 2: # attempt 0, 1
+                                delay = backoff_delay[attempt]
+                                logger.warning(f"Search API returned HTTP {resp.status}, retrying in {delay}s (attempt {attempt + 1}/2)", delay)
+                                await asyncio.sleep(delay)
+                                continue
+                            else:
+                                error_text = await resp.text()
+                                logger.error(f"Search API returned error: HTTP {resp.status} - {error_text}")
+                                return []
+
+                        # Other errors cases: don't retry
+                        #####
+                        else:
+                            error_text = await resp.text()
+                            logger.warning(f"Search API returned error: HTTP {resp.status} - {error_text}")
+                            return []
+
+            # Unknown other failures: still retry
+            except Exception as e:
+                if attempt < 2:
+                    delay = backoff_delay[attempt]
+                    logger.warning(f"Search API exception, retrying in {delay}s: {e}")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.exception(f"Search API exception with all 3 failed attempts: {e}")
+                    return []
+
+        return []
+
 
 
 
